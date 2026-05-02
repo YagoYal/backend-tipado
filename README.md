@@ -9,8 +9,9 @@ REST API com Node.js, Fastify, TypeScript e PostgreSQL — construída com foco 
 - **Linguagem:** TypeScript (strict)
 - **ORM:** Drizzle ORM
 - **Banco de dados:** PostgreSQL
+- **Cache / Blacklist:** Redis (ioredis)
 - **Validação:** Zod
-- **Autenticação:** JWT (`@fastify/jwt`) + bcryptjs
+- **Autenticação:** JWT + Refresh Tokens + bcryptjs
 - **Documentação:** Swagger UI (`/docs`)
 
 ## Arquitetura
@@ -18,7 +19,7 @@ REST API com Node.js, Fastify, TypeScript e PostgreSQL — construída com foco 
 ```
 src/
 ├── config/         # Variáveis de ambiente validadas com Zod
-├── db/             # Schema Drizzle + conexão PostgreSQL
+├── db/             # Schema Drizzle + conexão PostgreSQL + cliente Redis
 ├── errors/         # Classes de erro customizadas (AppError, NotFoundError, ConflictError)
 ├── http/
 │   ├── middlewares/ # Error handler, sanitização de input, audit log
@@ -36,7 +37,10 @@ src/
 
 - Rate limiting global (100 req/min) e específico em `/auth/login` (5 req/min)
 - Headers HTTP de segurança via `@fastify/helmet` com CSP customizada
-- JWT com expiração configurável — invalidado automaticamente após troca de senha
+- Access token JWT de curta duração (15min) com `jti` único por emissão
+- Refresh tokens rotativos — cada uso emite um novo e revoga o anterior
+- Blacklist de access tokens revogados no Redis (TTL = tempo restante do token)
+- JWT invalidado automaticamente após troca de senha (`pwdAt`)
 - Senhas com hash bcrypt (salt rounds 10)
 - Sanitização de HTML em todos os inputs antes da validação
 - Queries parametrizadas via Drizzle (sem SQL injection)
@@ -47,6 +51,7 @@ src/
 
 - Node.js 22+
 - PostgreSQL 16+
+- Redis 7+
 
 ## Configuração
 
@@ -58,7 +63,7 @@ npm install
 cp .env.example .env
 # Editar .env com suas credenciais
 
-# 3. Gerar JWT_SECRET forte
+# 3. Gerar JWT_SECRET forte (mínimo 64 chars)
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 # 4. Criar o banco de dados
@@ -85,6 +90,11 @@ npm run dev
 | `npm run lint` | Verifica erros de lint |
 | `npm run lint:fix` | Corrige erros de lint automaticamente |
 | `npm run format` | Formata o código com Prettier |
+| `npm run test` | Roda todos os testes |
+| `npm run test:unit` | Apenas testes unitários |
+| `npm run test:integration` | Apenas testes de integração |
+| `npm run test:coverage` | Testes com relatório de cobertura |
+| `npm run test:db:setup` | Cria o banco de testes e aplica migrations |
 | `npm run audit` | Verifica vulnerabilidades (nível high+) |
 
 ## Rotas
@@ -97,7 +107,9 @@ npm run dev
 ### Auth
 | Método | Rota | Auth | Descrição |
 |---|---|---|---|
-| POST | `/auth/login` | — | Autenticar e receber JWT |
+| POST | `/auth/login` | — | Autenticar — retorna `accessToken` + `refreshToken` |
+| POST | `/auth/refresh` | — | Rotacionar refresh token — retorna novos tokens |
+| POST | `/auth/logout` | JWT | Revogar sessão — blacklista access token e revoga refresh token |
 
 ### Users
 | Método | Rota | Auth | Descrição |
@@ -108,18 +120,18 @@ npm run dev
 
 **Parâmetros de paginação:** `?page=1&limit=20` (máx. 100)
 
-**Header de autenticação:** `Authorization: Bearer <token>`
+**Header de autenticação:** `Authorization: Bearer <accessToken>`
 
 A documentação completa e interativa está disponível em `http://localhost:3333/docs`.
 
-## Deploy com Docker
+## Deploy com Docker Compose
 
 ```bash
-# Build da imagem
-docker build -t backend-tipado .
+# 1. Configurar variáveis (obrigatórias: POSTGRES_PASSWORD, JWT_SECRET, CORS_ORIGIN)
+cp .env.example .env
 
-# Rodar o container
-docker run -p 3333:3333 --env-file .env backend-tipado
+# 2. Subir todos os serviços (app + PostgreSQL + Redis)
+docker compose up -d --build
 ```
 
 O container aplica as migrations automaticamente antes de iniciar o servidor.
